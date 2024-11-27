@@ -1,17 +1,42 @@
-from functools import wraps
+from pydantic import BaseModel
+import os
+from typing import List
+import json
 import pandas as pd
-from typing import Callable
-import matplotlib.pyplot as plt
-import networkx as nx
+from functools import wraps
+
+
+class StepData(BaseModel):
+    step_name: str
+    initial_count: int
+    final_count: int
+    removed_count: int
+
+
+class DataFlowTrackerModel(BaseModel):
+    steps: List[StepData]
+
+    def to_json(self, filename: str):
+        """Save the data flow tracking information to a JSON file."""
+        with open(filename, "w") as f:
+            json.dump(self.model_dump(), f, indent=4)
+
+    @staticmethod
+    def from_json(filepath: str):
+        """Load the data flow tracking information from a JSON file. Might not need."""
+        with open(filepath, "r") as f:
+            data = json.load(f)
+        return DataFlowTrackerModel.model_validate(data)
 
 
 class DataFlowTracker:
     def __init__(self):
         self.steps = []
-        self.counts = {}
 
-    def track(self, step_name: str) -> Callable:
-        def decorator(func: Callable) -> Callable:
+    def track(self, step_name: str):
+        """Decorator to track steps in the data processing pipeline."""
+
+        def decorator(func):
             @wraps(func)
             def wrapper(df: pd.DataFrame, *args, **kwargs) -> pd.DataFrame:
                 initial_count = len(df)
@@ -19,50 +44,54 @@ class DataFlowTracker:
                 final_count = len(result_df)
                 removed = initial_count - final_count
 
-                self.steps.append(step_name)
-                self.counts[step_name] = {
-                    "initial": initial_count,
-                    "final": final_count,
-                    "removed": removed,
-                }
+                # Record step data
+                self.steps.append(
+                    StepData(
+                        step_name=step_name,
+                        initial_count=initial_count,
+                        final_count=final_count,
+                        removed_count=removed,
+                    )
+                )
                 return result_df
 
             return wrapper
 
         return decorator
 
-    def generate_flowchart(self, title: str = "Data Processing Flow"):
-        G = nx.DiGraph()
-        pos = {}
-        labels = {}
+    def export_to_model(self) -> DataFlowTrackerModel:
+        """Export the tracked steps as a pydantic model."""
+        return DataFlowTrackerModel(steps=self.steps)
 
-        # Create nodes and edges
-        for i, step in enumerate(self.steps):
-            node_current = f"step_{i}"
-            counts = self.counts[step]
 
-            # Create node labels with counts
-            labels[node_current] = (
-                f"{step}\nInitial: {counts['initial']}\nRemoved: {counts['removed']}"
-            )
-            pos[node_current] = (0, -i)  # Vertical layout
+if __name__ == "__main__":
+    # Example usage
+    tracker = DataFlowTracker()
 
-            G.add_node(node_current)
-            if i > 0:
-                G.add_edge(f"step_{i-1}", node_current)
+    @tracker.track("Remove Duplicates")
+    def remove_duplicates(df: pd.DataFrame) -> pd.DataFrame:
+        return df.drop_duplicates()
 
-        # Plot
-        plt.figure(figsize=(10, 2 * len(self.steps)))
-        nx.draw(
-            G,
-            pos,
-            labels=labels,
-            node_color="lightblue",
-            node_size=3000,
-            font_size=8,
-            font_weight="bold",
-            arrows=True,
-            edge_color="gray",
-        )
-        plt.title(title)
-        return plt
+    @tracker.track("Remove Nulls")
+    def remove_nulls(df: pd.DataFrame) -> pd.DataFrame:
+        return df.dropna()
+
+    @tracker.track("Filter Outliers")
+    def filter_outliers(df: pd.DataFrame) -> pd.DataFrame:
+        return df[df["value"] < 100]
+
+    data = {
+        "name": ["Alice", "Bob", "Alice", "Alice", "Charlie", "Bob"],
+        "value": [10, 20, 10, 30, 100, 20],
+    }
+    df = pd.DataFrame(data)
+
+    df_processed = remove_duplicates(df)
+    df_processed = remove_nulls(df_processed)
+    df_processed = filter_outliers(df_processed)
+
+    data_flow_model = tracker.export_to_model()
+    data_flow_model.to_json("data_flow_tracking.json")
+
+    loaded_model = DataFlowTrackerModel.from_json("data_flow_tracking.json")
+    print(loaded_model)
